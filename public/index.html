@@ -519,18 +519,31 @@
 		splitButton.disabled = true;
 		splitButton.value = NowDoThis.currentLanguage.splitting;
 
-		// Call Claude API
+		// Helper function to reset button state
+		var resetButton = function() {
+			splitButton.disabled = false;
+			splitButton.value = NowDoThis.currentLanguage.splitTask;
+		};
+
+		// Call backend proxy endpoint
 		var xhr = new XMLHttpRequest();
-		xhr.open('POST', 'https://api.anthropic.com/v1/messages', true);
+		xhr.open('POST', '/api/split-task', true);
 		xhr.setRequestHeader('Content-Type', 'application/json');
-		xhr.setRequestHeader('x-api-key', apiKey);
-		xhr.setRequestHeader('anthropic-version', '2023-06-01');
+		xhr.timeout = 30000; // 30 second timeout
 
 		xhr.onreadystatechange = function() {
 			if (xhr.readyState === 4) {
 				if (xhr.status === 200) {
 					try {
 						var response = JSON.parse(xhr.responseText);
+
+						// Validate response structure
+						if (!response.content || !response.content[0] || !response.content[0].text) {
+							alert(NowDoThis.currentLanguage.apiError + '\n\nInvalid response format from API');
+							resetButton();
+							return;
+						}
+
 						var subtasksText = response.content[0].text;
 
 						// Parse subtasks (expecting one per line)
@@ -541,6 +554,13 @@
 							// Remove empty lines
 							return line.length > 0;
 						});
+
+						// Validate we got subtasks
+						if (subtasks.length === 0) {
+							alert(NowDoThis.currentLanguage.apiError + '\n\nNo subtasks returned from API');
+							resetButton();
+							return;
+						}
 
 						// Replace current task with subtasks
 						NowDoThis.selectedTab.tasks[0] = subtasks[0];
@@ -571,26 +591,61 @@
 						$('task').remove();
 						NowDoThis.makeTask();
 
+						// Re-enable button
+						resetButton();
+
 					} catch(e) {
-						alert(NowDoThis.currentLanguage.apiError);
-						splitButton.disabled = false;
-						splitButton.value = NowDoThis.currentLanguage.splitTask;
+						alert(NowDoThis.currentLanguage.apiError + '\n\n' + e.message);
+						resetButton();
 					}
+				} else if (xhr.status === 400) {
+					try {
+						var errorData = JSON.parse(xhr.responseText);
+						alert('Error: ' + (errorData.error || 'Bad request'));
+					} catch(e) {
+						alert(NowDoThis.currentLanguage.apiError + '\n\nBad request (400)');
+					}
+					resetButton();
+				} else if (xhr.status === 401) {
+					alert(NowDoThis.currentLanguage.apiError + '\n\nInvalid API key (401)');
+					resetButton();
+				} else if (xhr.status === 429) {
+					alert(NowDoThis.currentLanguage.apiError + '\n\nRate limit exceeded (429). Please try again later.');
+					resetButton();
+				} else if (xhr.status === 504) {
+					alert(NowDoThis.currentLanguage.apiError + '\n\nRequest timeout. Please try again.');
+					resetButton();
 				} else {
-					alert(NowDoThis.currentLanguage.apiError);
-					splitButton.disabled = false;
-					splitButton.value = NowDoThis.currentLanguage.splitTask;
+					var errorMsg = NowDoThis.currentLanguage.apiError;
+					try {
+						var errorData = JSON.parse(xhr.responseText);
+						if (errorData.error) {
+							errorMsg += '\n\n' + errorData.error;
+						}
+					} catch(e) {
+						errorMsg += '\n\nHTTP ' + xhr.status;
+					}
+					alert(errorMsg);
+					resetButton();
 				}
 			}
 		};
 
+		// Handle network errors
+		xhr.onerror = function() {
+			alert(NowDoThis.currentLanguage.apiError + '\n\nNetwork error. Please check your connection.');
+			resetButton();
+		};
+
+		// Handle timeout
+		xhr.ontimeout = function() {
+			alert(NowDoThis.currentLanguage.apiError + '\n\nRequest timed out. Please try again.');
+			resetButton();
+		};
+
 		var requestBody = JSON.stringify({
-			model: "claude-3-5-sonnet-20241022",
-			max_tokens: 1024,
-			messages: [{
-				role: "user",
-				content: "Break down this task into 3-5 concrete, actionable subtasks. Return only the subtasks, one per line, without numbering or bullets:\n\n" + currentTask
-			}]
+			api_key: apiKey,
+			task: currentTask
 		});
 
 		xhr.send(requestBody);
