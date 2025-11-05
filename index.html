@@ -30,10 +30,16 @@
 		#app, #controls, #about { padding-top: 35px; }
 
 		#link { padding-top: 16px; padding-bottom: 16px; font: 14px "Helvetica Neue"; }
-		
+
 		#list {margin-bottom: 12px; }
-		
+
 		#about h1 { font-size: 26px;}
+
+		#apiKey { margin-bottom: 12px; padding: 8px; width: 300px; font: 13px "Helvetica Neue"; }
+
+		#split-task { margin-left: 8px; font: 13px "Helvetica Neue"; }
+
+		.api-section { margin-bottom: 16px; }
 
 	</style>
 	<script src="prototype.js" type="text/javascript"></script>
@@ -69,7 +75,13 @@
 		about: "about",
 		aboutText: '<h1>how do you organize your day? a calendar requires you to predict the unpredictable. a todo list can overwhelm you with data. I wanted a \'boss\' to tell me what to do. enjoy this free tool.<br/><br/>and <a href="http://nowdothis.tumblr.com/">we have a blog</a>.<br/><br/>and <a href="mailto:nowdothis@gmail.com">nowdothis<br>@gmail.com</a>.<br/><br/>built by <a href="http://jakoblodwick.com">Jakob Lodwick</a> and <a href="http://williamcotton.tumblr.com/">William Cotton</a>.</h1>',
 		ok: "ok thanks",
-		or: "or"
+		or: "or",
+		splitTask: "split into subtasks",
+		apiKey: "api key",
+		apiKeyPlaceholder: "enter your claude api key",
+		splitting: "splitting...",
+		apiKeyRequired: "please set your claude api key first",
+		apiError: "error calling api. check your api key and try again."
 	}
 	
 	// swedish
@@ -298,8 +310,9 @@
 	NowDoThis.load = function() {
 		NowDoThis.cookieExpiresDate = new Date((new Date).getTime()+86400000000).toGMTString();
 		NowDoThis.currentLanguage = NowDoThis.getLanguage();
-		NowDoThis.createDom();	
+		NowDoThis.createDom();
 		NowDoThis.getListCookie();
+		NowDoThis.getApiKeyCookie();
 		NowDoThis.parseList();
 		NowDoThis.createTabs();
 		NowDoThis.selectTab(0);
@@ -350,14 +363,24 @@
 		
 		var controls = new Element('div', { 'id': 'controls'});
 		controls.style.display = "none";
-		
+
 		var form = new Element('form', { 'method': 'post'})
+
+		// API Key section
+		var apiSection = new Element('div', { 'class': 'api-section' });
+		var apiKeyLabel = new Element('label').update(NowDoThis.currentLanguage.apiKey + ': ');
+		var apiKeyInput = new Element('input', { 'id': 'apiKey', 'type': 'password', 'placeholder': NowDoThis.currentLanguage.apiKeyPlaceholder });
+		apiSection.insert(apiKeyLabel);
+		apiSection.insert("<br/>");
+		apiSection.insert(apiKeyInput);
+
 		var textarea = new Element('textarea', { 'id': 'list', 'name': 'list', 'cols': '24', 'rows': '15'});
 		var saveButton = new Element('input', { 'id': 'save', 'type': 'button', 'value': NowDoThis.currentLanguage.save});
 		Event.observe(saveButton, "click", NowDoThis.saveList);
 		var cancelButton = new Element('a', { 'id': 'cancel'}).update(NowDoThis.currentLanguage.cancel);
 		Event.observe(cancelButton, "click", NowDoThis.cancelList);
-		
+
+		form.insert(apiSection);
 		form.insert(textarea);
 		form.insert("<br/>");
 		form.insert(saveButton);
@@ -403,6 +426,7 @@
 		if ($('task'))
 			$('task').remove()
 		NowDoThis.setListCookie();
+		NowDoThis.setApiKeyCookie();
 		$('controls').hide();
 		$('app').show();
 		NowDoThis.list = $('list').value.split("\n").reject(function(item) { return /^\s*$/.match(item) });
@@ -423,7 +447,17 @@
 			NowDoThis.list = NowDoThis.currentLanguage.list;
 		}
 		$('list').value = unescape(NowDoThis.list.join("\n"));
-			
+	}
+
+	NowDoThis.getApiKeyCookie = function() {
+		if (document.cookie.split("apiKey=")[1]) {
+			var apiKey = unescape(document.cookie.split("apiKey=")[1].split(";")[0]);
+			$('apiKey').value = apiKey;
+		}
+	}
+
+	NowDoThis.setApiKeyCookie = function() {
+		document.cookie = "apiKey=" + escape($('apiKey').value) + ";expires=" + NowDoThis.cookieExpiresDate + ";path=/";
 	}
 	
 	NowDoThis.makeTask = function() {
@@ -438,8 +472,11 @@
 		var taskH1 = new Element('h1').update(t);
 		var taskDone = new Element('input', { 'type': 'button', 'value': NowDoThis.currentLanguage.done });
 		Event.observe(taskDone, "click", NowDoThis.completeTask);
+		var taskSplit = new Element('input', { 'type': 'button', 'id': 'split-task', 'value': NowDoThis.currentLanguage.splitTask });
+		Event.observe(taskSplit, "click", NowDoThis.splitTask);
 		taskDiv.insert(taskH1);
 		taskDiv.insert(taskDone);
+		taskDiv.insert(taskSplit);
 		$('tasks').insert(taskDiv);
 	}
 	
@@ -464,6 +501,99 @@
 		}
 		NowDoThis.setListCookie();
 		NowDoThis.makeTask();
+	}
+
+	NowDoThis.splitTask = function() {
+		// Check if API key is set
+		var apiKey = $('apiKey').value;
+		if (!apiKey) {
+			alert(NowDoThis.currentLanguage.apiKeyRequired);
+			return;
+		}
+
+		// Get current task
+		var currentTask = unescape(NowDoThis.selectedTab.tasks[0]);
+
+		// Disable button and show loading state
+		var splitButton = $('split-task');
+		splitButton.disabled = true;
+		splitButton.value = NowDoThis.currentLanguage.splitting;
+
+		// Call Claude API
+		var xhr = new XMLHttpRequest();
+		xhr.open('POST', 'https://api.anthropic.com/v1/messages', true);
+		xhr.setRequestHeader('Content-Type', 'application/json');
+		xhr.setRequestHeader('x-api-key', apiKey);
+		xhr.setRequestHeader('anthropic-version', '2023-06-01');
+
+		xhr.onreadystatechange = function() {
+			if (xhr.readyState === 4) {
+				if (xhr.status === 200) {
+					try {
+						var response = JSON.parse(xhr.responseText);
+						var subtasksText = response.content[0].text;
+
+						// Parse subtasks (expecting one per line)
+						var subtasks = subtasksText.split('\n').map(function(line) {
+							// Remove leading bullets, numbers, or dashes
+							return line.replace(/^[\s\-\*0-9\.\)]+/, '').trim();
+						}).filter(function(line) {
+							// Remove empty lines
+							return line.length > 0;
+						});
+
+						// Replace current task with subtasks
+						NowDoThis.selectedTab.tasks[0] = subtasks[0];
+						for (var i = 1; i < subtasks.length; i++) {
+							NowDoThis.selectedTab.tasks.splice(i, 0, subtasks[i]);
+						}
+
+						// Update the list cookie and UI
+						$('list').value = "";
+						if (NowDoThis.tabs.size() > 1) {
+							NowDoThis.tabs.each(function(tab, i) {
+								if (i > 0) {
+									$('list').value += "\n\n";
+								}
+								$('list').value += tab.name;
+								if (tab.tasks.size() > 0) {
+									$('list').value += "\n";
+								}
+								$('list').value += tab.tasks.join("\n");
+							});
+						}
+						else {
+							$('list').value = NowDoThis.selectedTab.tasks.join("\n");
+						}
+						NowDoThis.setListCookie();
+
+						// Refresh the task display
+						$('task').remove();
+						NowDoThis.makeTask();
+
+					} catch(e) {
+						alert(NowDoThis.currentLanguage.apiError);
+						splitButton.disabled = false;
+						splitButton.value = NowDoThis.currentLanguage.splitTask;
+					}
+				} else {
+					alert(NowDoThis.currentLanguage.apiError);
+					splitButton.disabled = false;
+					splitButton.value = NowDoThis.currentLanguage.splitTask;
+				}
+			}
+		};
+
+		var requestBody = JSON.stringify({
+			model: "claude-3-5-sonnet-20241022",
+			max_tokens: 1024,
+			messages: [{
+				role: "user",
+				content: "Break down this task into 3-5 concrete, actionable subtasks. Return only the subtasks, one per line, without numbering or bullets:\n\n" + currentTask
+			}]
+		});
+
+		xhr.send(requestBody);
 	}
 	
 	NowDoThis.parseList = function() {
